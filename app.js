@@ -319,9 +319,10 @@ function teamGradient(team){
  const c=TEAM_COLORS[team]||['#47647F','#859BB0'];
  return `linear-gradient(110deg,${c[0]},${c[1]})`;
 }
-function confidencePercent(confidence,n=gameConfidenceLimit()){
- if(!confidence)return 0;
- return n<=1?100:Math.round((Number(confidence)-1)/(n-1)*100);
+// Cada partido tiene su propio porcentaje real de confianza: 0 a 100.
+function confidencePercent(confidence){
+ if(confidence == null || !Number.isFinite(Number(confidence)))return 0;
+ return Math.max(0,Math.min(100,Math.round(Number(confidence))));
 }
 function getSupport(g){
  const ps=picksWeek().filter(p=>p.event_id===g.event_id),away=ps.filter(p=>p.pick_team===g.away_team).reduce((s,p)=>s+p.confidence,0),home=ps.filter(p=>p.pick_team===g.home_team).reduce((s,p)=>s+p.confidence,0);
@@ -378,10 +379,10 @@ function renderPicks(){
       return `<button type="button" class="team ${d.team===short?'selected':''} ${isFinal&&g.winner===short?'won':''}" data-pick="${escapeHtml(g.event_id)}" data-team="${escapeHtml(short)}" ${isLocked?'disabled':''}>${logo(short,name,lg)}<span><b>${escapeHtml(name)}</b><small>${d.team===short?'TU ELECCIÓN':side==='home'?'LOCAL':'VISITANTE'}</small></span></button>`};
     const pct=confidencePercent(d.confidence,n);
     const date=duration(g.kickoff_at).toUpperCase();
-    return `<article class="game"><div class="game-top"><span>${escapeHtml(date)} · ${escapeHtml(g.event_id.startsWith('demo-')?'NFL':'NFL')}</span><span class="${isFinal?'final':''}">${isFinal?'FINAL':g.status==='in'?'EN VIVO':isLocked?'CERRADO':'ABIERTO'}${g.home_score!=null&&g.away_score!=null?' · '+escapeHtml(g.away_score)+' – '+escapeHtml(g.home_score):''}</span></div><div class="game-bottom"><div class="teams">${team('away')}<span class="vs">VS</span>${team('home')}</div><div class="confidence"><div class="confidence-heading"><label for="confidence-${escapeHtml(g.event_id)}">¿QUÉ TAN SEGURO?</label><strong class="confidence-value" data-percent-for="${escapeHtml(g.event_id)}">${d.team?pct+'%':'—'}</strong></div><input type="range" min="1" max="${n}" step="1" id="confidence-${escapeHtml(g.event_id)}" data-confidence="${escapeHtml(g.event_id)}" value="${Number(d.confidence)||1}" style="--progress:${pct}%" ${isLocked||!d.team?'disabled':''} aria-label="Confianza: MOFE a LOCK"/><div class="confidence-extremes"><span>MOFE</span><span>LOCK</span></div></div></div></article>`;
+    return `<article class="game"><div class="game-top"><span>${escapeHtml(date)} · ${escapeHtml(g.event_id.startsWith('demo-')?'NFL':'NFL')}</span><span class="${isFinal?'final':''}">${isFinal?'FINAL':g.status==='in'?'EN VIVO':isLocked?'CERRADO':'ABIERTO'}${g.home_score!=null&&g.away_score!=null?' · '+escapeHtml(g.away_score)+' – '+escapeHtml(g.home_score):''}</span></div><div class="game-bottom"><div class="teams">${team('away')}<span class="vs">VS</span>${team('home')}</div><div class="confidence"><div class="confidence-heading"><label for="confidence-${escapeHtml(g.event_id)}">¿QUÉ TAN SEGURO?</label><strong class="confidence-value" data-percent-for="${escapeHtml(g.event_id)}">${d.team?pct+'%':'—'}</strong></div><input type="range" min="0" max="100" step="5" id="confidence-${escapeHtml(g.event_id)}" data-confidence="${escapeHtml(g.event_id)}" value="${d.confidence ?? 50}" style="--progress:${pct}%" ${isLocked||!d.team?'disabled':''} aria-label="Confianza: MOFE a LOCK"/><div class="confidence-extremes"><span>MOFE</span><span>LOCK</span></div></div></div></article>`;
   }).join('');
   const changed=JSON.stringify(Object.entries(state.draft).sort())!==JSON.stringify(Object.entries(Object.fromEntries(mine().map(p=>[p.event_id,{team:p.pick_team,confidence:p.confidence}]))).sort());
-  return `<div class="section-head"><div><h2>Mis picks de la semana</h2><p>Elige al ganador y ajusta la confianza: MOFE = duda total, LOCK = máxima seguridad. Cada nivel se usa una vez.</p></div><span class="count-tag">${closed} CERRADOS · ${n-closed} ABIERTOS</span></div><div class="games">${blocks}</div><div class="foot-action"><p>${changed?'<span class="save-status">Cambios sin guardar</span>':'Los porcentajes son niveles de confianza, no puntos del marcador. Puedes editar hasta el kickoff.'}<br />Los picks cerrados ya no se pueden modificar.</p><button class="button button-primary" id="save-picks" ${state.isSaving?'disabled':''}>${state.isSaving?'Guardando…':'Guardar mis pronósticos →'}</button></div>`;
+  return `<div class="section-head"><div><h2>Mis picks de la semana</h2><p>Elige al ganador y ajusta su confianza: MOFE = 0%, LOCK = 100%. Cada partido tiene un slider independiente.</p></div><span class="count-tag">${closed} CERRADOS · ${n-closed} ABIERTOS</span></div><div class="games">${blocks}</div><div class="foot-action"><p>${changed?'<span class="save-status">Cambios sin guardar</span>':'Los porcentajes son niveles de confianza, no puntos del marcador. Puedes editar hasta el kickoff.'}<br />Los picks cerrados ya no se pueden modificar.</p><button class="button button-primary" id="save-picks" ${state.isSaving?'disabled':''}>${state.isSaving?'Guardando…':'Guardar mis pronósticos →'}</button></div>`;
 }
 function renderConsensus(){
  const gs=gamesWeek(),accuracy=totalGroupAccuracy('week'),collective=consensusAccuracy();
@@ -419,31 +420,31 @@ function renderParlay(){
 }
 function renderRanking(){
  const leaders=memberStats(state.scope),accuracy=totalGroupAccuracy(state.scope),onWeek=state.scope==='week';
- const dates=state.allGames.filter(g=>g.season===state.season&&g.week===state.week),max=dates.length*(dates.length+1)/2;
+ const dates=state.allGames.filter(g=>g.season===state.season&&g.week===state.week),max=dates.length*100;
  return `<div class="section-head"><div><h2>El marcador de la liga</h2><p>El orden se determina por puntos de confianza acertados.</p></div><span class="count-tag">${onWeek?`${max} PTS POSIBLES`:'TEMPORADA '+state.season}</span></div><div style="display:flex;gap:8px;margin:0 0 17px"><button class="button ${onWeek?'button-primary':'button-ghost'}" data-scope="week">Esta semana</button><button class="button ${!onWeek?'button-primary':'button-ghost'}" data-scope="season">Temporada</button></div><div class="projection"><div class="projection-row"><div><div class="matchup">PRECISIÓN DEL GRUPO</div><span class="forecast-info">Todos los picks evaluados ${onWeek?'esta semana':'en la temporada'}</span></div><strong style="font-size:23px">${accuracy.accuracy==null?'—':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} correctos de ${accuracy.judged} pronósticos finalizados</div></div><div class="ranking-list">${leaders.map((r,i)=>`<div class="rank-card"><div class="rank-pos">${String(i+1).padStart(2,'0')}</div><div><div class="rank-name">${escapeHtml(r.nickname)} ${r.user_id===state.user?.id?'<span style="color:#9edc6a;font-size:10px">(TÚ)</span>':''}</div><div class="rank-detail">${r.correct} aciertos / ${r.judged} evaluados · ${r.judged?Math.round(r.precision*100)+'%':'Sin resultados'} de precisión</div></div><div class="rank-score">${r.points}<small>PUNTOS</small></div></div>`).join('')||'<div class="empty-state">Aún no hay participantes.</div>'}</div>`;
 }
 function editTeam(gameId,team){
  const g=gamesWeek().find(g=>g.event_id===gameId);if(!g||locked(g))return;
  const d=state.draft[gameId];if(d?.team===team){delete state.draft[gameId];render();return;}
- let confidence=d?.confidence;
- if(!confidence){const taken=new Set(Object.values(state.draft).map(v=>v.confidence));confidence=Array.from({length:gameConfidenceLimit()},(_,i)=>i+1).find(n=>!taken.has(n))||null;}
+ const confidence=d?.confidence ?? 50;
  state.draft[gameId]={team,confidence};render();
 }
 function changeConfidence(gameId,value){
- const g=gamesWeek().find(g=>g.event_id===gameId),current=state.draft[gameId];if(!g||locked(g)||!current?.team)return;
- const val=Number(value)||null;
- const occupant=Object.entries(state.draft).find(([id,d])=>id!==gameId&&d.confidence===val);
- if(occupant){const occGame=gamesWeek().find(g=>g.event_id===occupant[0]);if(occGame&&locked(occGame)){toast('Ese nivel ya quedó bloqueado en otro partido.');render();return;}
-   state.draft[occupant[0]]={...occupant[1],confidence:current.confidence||null};}
- state.draft[gameId]={...current,confidence:val};render();
+ const g=gamesWeek().find(g=>g.event_id===gameId),current=state.draft[gameId];
+ if(!g||locked(g)||!current?.team)return;
+ const val=Number(value);
+ if(!Number.isInteger(val)||val<0||val>100)return;
+ // No intercambiamos la confianza con ningún otro partido.
+ state.draft[gameId]={...current,confidence:val};
+ render();
 }
 async function savePicks(){
  if(!state.user||state.isSaving)return;
  const all=gamesWeek();const open=all.filter(g=>!locked(g));
  const toSave=open.filter(g=>state.draft[g.event_id]?.team).map(g=>({event_id:g.event_id,pick_team:state.draft[g.event_id].team,confidence:Number(state.draft[g.event_id].confidence)}));
- if(toSave.some(p=>!p.confidence)){toast('Asigna una confianza a cada partido elegido.');return;}
- const ranks=[...toSave,...all.filter(locked).map(g=>{const v=state.draft[g.event_id];return v?{confidence:v.confidence}:null}).filter(Boolean)].map(p=>p.confidence);
- if(new Set(ranks).size!==ranks.length){toast('Cada porcentaje equivale a un nivel de confianza único. Ajusta tus sliders.');return;}
+ if(toSave.some(p=>!Number.isInteger(p.confidence)||p.confidence<0||p.confidence>100)){
+   toast('La confianza debe estar entre 0% y 100%.');return;
+ }
  state.isSaving=true;render();
  try{
   if(isLive){const r=await db.rpc('submit_week_picks',{p_group_id:state.group.id,p_season:state.season,p_week:state.week,p_picks:toSave});if(r.error)throw r.error;await loadLive();}
