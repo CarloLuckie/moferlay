@@ -1,0 +1,27 @@
+name: Sincronizar NFL
+on:
+  workflow_dispatch:
+    inputs:
+      weeks:
+        description: 'Semanas separadas por coma o 1-18'
+        required: false
+        default: '1-18'
+  schedule:
+    - cron: '*/30 * * * *'
+permissions:
+  contents: read
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm install --no-audit --no-fund
+      - name: Sincronizar marcadores
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          NFL_WEEKS: ${{ inputs.weeks }}
+        run: node scripts/sync-nfl.mjs

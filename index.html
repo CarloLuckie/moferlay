@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="theme-color" content="#0b1019" />
+  <meta name="description" content="Una liga privada de NFL Pick'em: picks de confianza, consenso y clasificación en vivo." />
+  <title>Sunday Club — NFL Pick'em</title>
+  <link rel="stylesheet" href="./styles.css" />
+  <script src="./config.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js" defer></script>
+  <script type="module" src="./app.js"></script>
+</head>
+<body>
+  <div class="shell">
+    <header class="topbar">
+      <div class="brand"><span class="brand-icon">✦</span><span>SUNDAY<span class="brand-alt">CLUB</span><small>THE WEEKLY NFL POOL</small></span></div>
+      <div class="topright"><span id="mode-badge" class="pill pill-amber">DEMO LOCAL</span><span id="account-name" class="account">Invitado</span></div>
+    </header>
+    <main class="main" id="main">
+      <section class="hero">
+        <div class="hero-content">
+          <div class="eyebrow"><span class="green-dot"></span> TEMPORADA <span id="season-label">2026</span> <span class="eyebrow-sep">/</span> LIGA PRIVADA</div>
+          <h1>No basta con acertar.<br/><em>Hay que estar seguro.</em></h1>
+          <p>Elige ganadores, distribuye tu confianza y demuestra quién sabe más de NFL.</p>
+          <div class="hero-tools"><div class="week-switch"><button class="week-arrow" id="prev-week" aria-label="Semana anterior">‹</button><div><small>JORNADA ACTUAL</small><strong id="week-label">SEMANA 05</strong></div><button class="week-arrow" id="next-week" aria-label="Semana siguiente">›</button></div><button class="button button-outline" id="share-btn">Compartir liga ↗</button></div>
+        </div>
+        <div class="hero-art" aria-hidden="true"><span>05</span><i>WEEK</i></div>
+      </section>
+      <section class="stats" aria-label="Estadísticas"><div class="stat"><small>PARTIDOS</small><strong id="stat-games">—</strong><span>en la jornada</span></div><div class="stat"><small>MIS PICKS</small><strong id="stat-picks">—</strong><span>de los disponibles</span></div><div class="stat"><small>MI PUNTAJE</small><strong id="stat-points">—</strong><span>puntos ganados</span></div><div class="stat"><small>PARTICIPANTES</small><strong id="stat-members">—</strong><span>en esta liga</span></div></section>
+      <div class="workspace">
+        <section class="primary">
+          <nav class="tabs" aria-label="Secciones"><button class="tab active" data-tab="picks">Mis pronósticos</button><button class="tab" data-tab="consensus">Consenso del grupo</button><button class="tab" data-tab="ranking">Clasificación</button></nav>
+          <div id="content" aria-live="polite"></div>
+        </section>
+        <aside class="sidebar">
+          <div class="panel sidebar-panel"><div class="panel-title">TU LIGA <span class="dot-menu">•••</span></div><h2 id="group-title">Sunday Crew</h2><p id="group-description">Elige tu equipo. Gana la semana.</p><div class="side-divider"></div><div class="info-line"><span>Participantes</span><strong id="side-members">—</strong></div><div class="info-line"><span>Semana activa</span><strong id="side-week">05 / 18</strong></div><button id="invite-btn" class="button button-primary wide">Invitar amigos ↗</button><p id="demo-note" class="fineprint">Modo demostración: los cambios se guardan solo en este navegador. Configura Supabase para compartir votos.</p></div>
+          <div class="panel how-panel"><div class="panel-title">CÓMO SE JUEGA</div><ol><li>Elige un ganador por partido.</li><li>Asigna niveles únicos de confianza del 1 al número de partidos.</li><li>Acertar suma esos puntos. Fallar suma 0.</li><li>Al empezar un partido, ese pick queda bloqueado.</li></ol></div>
+          <div class="panel forecast-panel"><div class="panel-title">FAVORITO PROYECTADO</div><div id="forecast" class="forecast-body">Sin proyecciones todavía.</div><p class="fineprint">Proyección ilustrativa basada en los picks del grupo; no son probabilidades de casas de apuestas.</p></div>
+        </aside>
+      </div>
+    </main>
+    <footer><span>© 2026 SUNDAY CLUB</span><span>Hecho para discutir de NFL con amigos. Independiente de la NFL.</span></footer>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="setup-dialog" class="modal"><form method="dialog" id="setup-form"><div class="modal-eyebrow">CONFIGURAR LIGA</div><h2 id="dialog-title">Entra al grupo</h2><p id="dialog-text">Usa un apodo para participar.</p><label for="nickname">TU APODO</label><input required maxlength="22" minlength="2" id="nickname" name="nickname" placeholder="Ej. Carlos" autocomplete="nickname" /><div id="new-group-field"><label for="new-group-name">NOMBRE DE TU LIGA</label><input maxlength="48" minlength="3" id="new-group-name" name="groupName" placeholder="Ej. Los Domingueros" /></div><p id="setup-error" class="form-error"></p><button type="submit" class="button button-primary wide" id="setup-confirm" value="confirm">Entrar a la liga</button></form></dialog>
+</body>
+</html>

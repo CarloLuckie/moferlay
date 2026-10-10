@@ -1,0 +1,9 @@
+{
+  "name":"sunday-club-pickem",
+  "version":"1.0.0",
+  "private":true,
+  "type":"module",
+  "description":"NFL confidence pool de amigos",
+  "dependencies":{"@supabase/supabase-js":"^2.57.0"},
+  "scripts":{"sync":"node scripts/sync-nfl.mjs"}
+}
