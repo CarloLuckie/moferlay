@@ -266,23 +266,65 @@ function subscribeChanges(){
   db.channel('club-'+state.group.id).on('postgres_changes',{event:'*',schema:'public',table:'picks',filter:`group_id=eq.${state.group.id}`},()=>loadLive()).on('postgres_changes',{event:'*',schema:'public',table:'games'},()=>loadLive()).on('postgres_changes',{event:'*',schema:'public',table:'group_members',filter:`group_id=eq.${state.group.id}`},()=>loadLive()).subscribe();
 }
 function resetDraft(){state.draft={};for(const p of mine())state.draft[p.event_id]={team:p.pick_team,confidence:p.confidence};}
+// Los porcentajes son solo una encuesta de confianza, NO otorgan puntos extra.
+// Cada ganador correcto gana 30 puntos si lo eligio la mayoria (o si hay empate
+// en cantidad de votos), y 50 puntos si lo eligio la minoria.
+// La mayoria se decide por NUMERO DE PERSONAS, no por el slider de confianza.
+// Cada pick queda inmutable al kickoff, por lo que un resultado final no cambia
+// aunque mas adelante se unan nuevas personas a la liga.
+const SCORE_MAJORITY = 30;
+const SCORE_MINORITY = 50;
+function gameVoteCounts(g, votes=state.allPicks){
+  let home=0,away=0;
+  for(const v of votes){
+    if(v.season!==g.season||v.week!==g.week||v.event_id!==g.event_id)continue;
+    if(v.pick_team===g.home_team)home++;
+    else if(v.pick_team===g.away_team)away++;
+  }
+  return {home,away,total:home+away};
+}
+function pickVotePosition(g,team,counts=gameVoteCounts(g)){
+  const own=team===g.home_team?counts.home:team===g.away_team?counts.away:0;
+  const opposing=team===g.home_team?counts.away:counts.home;
+  if(!own)return null;
+  return own<opposing?'minority':own>opposing?'majority':'tie';
+}
+function pointsForWinningPick(g,team,counts=gameVoteCounts(g)){
+  return pickVotePosition(g,team,counts)==='minority'?SCORE_MINORITY:SCORE_MAJORITY;
+}
 function memberStats(scope='week'){
   const all=scope==='season'?state.allGames:gamesWeek();
   const keys=new Map(all.map(g=>[gameKey(g),g]));
+  const counts=new Map(all.map(g=>[gameKey(g),gameVoteCounts(g)]));
   const leaderboard=state.members.map(m=>{
-    let points=0,correct=0,judged=0, projected=0;
+    let points=0,correct=0,judged=0,projected=0,minorityCorrect=0,majorityCorrect=0,tiedCorrect=0;
     for(const p of state.allPicks){
       if(p.user_id!==m.user_id)continue;
-      const g=keys.get(gameKey(p));if(!g)continue;
-      if(g.status==='post'){judged++;if(g.winner===p.pick_team){points+=p.confidence;correct++;}}
-      else if(g.status!=='post'){
-        const votes=state.allPicks.filter(v=>v.season===g.season&&v.week===g.week&&v.event_id===g.event_id);
-        const total=votes.reduce((s,v)=>s+v.confidence,0);
-        const yours=votes.filter(v=>v.pick_team===p.pick_team).reduce((s,v)=>s+v.confidence,0);
-        projected+=total? p.confidence*(yours/total):p.confidence*.5;
+      const key=gameKey(p),g=keys.get(key);if(!g)continue;
+      const votes=counts.get(key);
+      const position=pickVotePosition(g,p.pick_team,votes);
+      if(g.status==='post'){
+        // Un empate real de NFL no cuenta ni como acierto ni como error.
+        if(!g.winner)continue;
+        judged++;
+        if(g.winner===p.pick_team){
+          correct++;
+          points+=pointsForWinningPick(g,p.pick_team,votes);
+          if(position==='minority')minorityCorrect++;
+          else if(position==='majority')majorityCorrect++;
+          else tiedCorrect++;
+        }
+      }else {
+        // Estimacion social simple, NO probabilidad estadistica de ganar.
+        // Los puntos esperados usan el apoyo por cantidad de votos,
+        // mientras que el slider solo interviene en la barra de consenso.
+        const own=p.pick_team===g.home_team?votes.home:votes.away;
+        const socialShare=votes.total?own/votes.total:0.5;
+        projected+=socialShare*pointsForWinningPick(g,p.pick_team,votes);
       }
     }
-    return { ...m,points,correct,judged,precision:judged?correct/judged:0,projected:points+projected};
+    return {...m,points,correct,judged,minorityCorrect,majorityCorrect,tiedCorrect,
+      precision:judged?correct/judged:0,projected:points+projected};
   });
   leaderboard.sort((a,b)=>b.points-a.points||b.correct-a.correct||a.nickname.localeCompare(b.nickname));
   return leaderboard;
@@ -326,7 +368,8 @@ function confidencePercent(confidence){
 }
 function getSupport(g){
  const ps=picksWeek().filter(p=>p.event_id===g.event_id),away=ps.filter(p=>p.pick_team===g.away_team).reduce((s,p)=>s+p.confidence,0),home=ps.filter(p=>p.pick_team===g.home_team).reduce((s,p)=>s+p.confidence,0);
- return {away,home,total:away+home,participants:ps.length,ballots:ps};
+ const votes=gameVoteCounts(g,ps);
+ return {away,home,total:away+home,participants:ps.length,ballots:ps,awayVotes:votes.away,homeVotes:votes.home};
 }
 function teamBar(g,awayPct,homePct,hasVotes=true){
  return `<div class="bar team-bar" role="img" aria-label="${escapeHtml(g.away_name)} ${hasVotes?awayPct+'%':'sin votos'}; ${escapeHtml(g.home_name)} ${hasVotes?homePct+'%':'sin votos'}">
@@ -361,7 +404,7 @@ function render(){
   $('#stat-members').textContent=state.members.length;
   $$('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===state.tab));
   const projected=topProjected();
-  $('#forecast').innerHTML=projected?`<div class="forecast-person">${escapeHtml(projected.nickname)}</div><div class="forecast-score">${number(projected.projected)} <small style="font-size:12px;color:#9cacbc;letter-spacing:0">pts esperados</small></div><div class="forecast-info">${number(projected.points)} puntos confirmados · líder proyectado de la semana</div>`:'<span class="forecast-info">Aún no hay pronósticos.</span>';
+  $('#forecast').innerHTML=projected?`<div class="forecast-person">${escapeHtml(projected.nickname)}</div><div class="forecast-score">${number(projected.projected)} <small style="font-size:12px;color:#9cacbc;letter-spacing:0">pts estimados</small></div><div class="forecast-info">${number(projected.points)} puntos confirmados · líder proyectado de la semana</div>`:'<span class="forecast-info">Aún no hay pronósticos.</span>';
   if(state.isLoading){$('#content').innerHTML='<div class="empty-state">Cargando partidos y votos…</div>';return}
   if(state.lastError){$('#content').innerHTML=`<div class="empty-state">${escapeHtml(state.lastError)}<p>Revisa las credenciales y las políticas de Supabase.</p></div>`;return}
   $('#content').innerHTML=state.tab==='picks'?renderPicks():state.tab==='consensus'?renderConsensus():state.tab==='parlay'?renderParlay():renderRanking();
@@ -382,15 +425,15 @@ function renderPicks(){
     return `<article class="game"><div class="game-top"><span>${escapeHtml(date)} · ${escapeHtml(g.event_id.startsWith('demo-')?'NFL':'NFL')}</span><span class="${isFinal?'final':''}">${isFinal?'FINAL':g.status==='in'?'EN VIVO':isLocked?'CERRADO':'ABIERTO'}${g.home_score!=null&&g.away_score!=null?' · '+escapeHtml(g.away_score)+' – '+escapeHtml(g.home_score):''}</span></div><div class="game-bottom"><div class="teams">${team('away')}<span class="vs">VS</span>${team('home')}</div><div class="confidence"><div class="confidence-heading"><label for="confidence-${escapeHtml(g.event_id)}">¿QUÉ TAN SEGURO?</label><strong class="confidence-value" data-percent-for="${escapeHtml(g.event_id)}">${d.team?pct+'%':'—'}</strong></div><input type="range" min="0" max="100" step="5" id="confidence-${escapeHtml(g.event_id)}" data-confidence="${escapeHtml(g.event_id)}" value="${d.confidence ?? 50}" style="--progress:${pct}%" ${isLocked||!d.team?'disabled':''} aria-label="Confianza: MOFE a LOCK"/><div class="confidence-extremes"><span>MOFE</span><span>LOCK</span></div></div></div></article>`;
   }).join('');
   const changed=JSON.stringify(Object.entries(state.draft).sort())!==JSON.stringify(Object.entries(Object.fromEntries(mine().map(p=>[p.event_id,{team:p.pick_team,confidence:p.confidence}]))).sort());
-  return `<div class="section-head"><div><h2>Mis picks de la semana</h2><p>Elige al ganador y ajusta su confianza: MOFE = 0%, LOCK = 100%. Cada partido tiene un slider independiente.</p></div><span class="count-tag">${closed} CERRADOS · ${n-closed} ABIERTOS</span></div><div class="games">${blocks}</div><div class="foot-action"><p>${changed?'<span class="save-status">Cambios sin guardar</span>':'Los porcentajes son niveles de confianza, no puntos del marcador. Puedes editar hasta el kickoff.'}<br />Los picks cerrados ya no se pueden modificar.</p><button class="button button-primary" id="save-picks" ${state.isSaving?'disabled':''}>${state.isSaving?'Guardando…':'Guardar mis pronósticos →'}</button></div>`;
+  return `<div class="section-head"><div><h2>Mis picks de la semana</h2><p>Elige ganador y ajusta tu confianza: MOFE = 0%, LOCK = 100%. ¡El porcentaje no afecta tus puntos! Acierta con la mayoría: +30; contra la mayoría: +50.</p></div><span class="count-tag">${closed} CERRADOS · ${n-closed} ABIERTOS</span></div><div class="games">${blocks}</div><div class="foot-action"><p>${changed?'<span class="save-status">Cambios sin guardar</span>':'Los porcentajes son niveles de confianza, no puntos del marcador. Puedes editar hasta el kickoff.'}<br />Los picks cerrados ya no se pueden modificar.</p><button class="button button-primary" id="save-picks" ${state.isSaving?'disabled':''}>${state.isSaving?'Guardando…':'Guardar mis pronósticos →'}</button></div>`;
 }
 function renderConsensus(){
  const gs=gamesWeek(),accuracy=totalGroupAccuracy('week'),collective=consensusAccuracy();
  if(!gs.length)return '<div class="empty-state">No hay partidos en esta jornada.</div>';
- return `<div class="section-head"><div><h2>El pronóstico del grupo</h2><p>Cuánto respaldo tiene cada equipo, ponderando el nivel de confianza.</p></div><span class="count-tag">${state.members.length} PARTICIPANTES</span></div><div class="projection"><div class="projection-row"><span class="matchup">PRECISIÓN COLECTIVA</span><strong>${accuracy.accuracy==null?'POR DEFINIR':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} aciertos en ${accuracy.judged} pronósticos individuales evaluados. · Consenso del grupo: ${collective.ratio===null?'sin partidos cerrados':collective.ratio+'%'} (${collective.correct}/${collective.judged}).</div></div>${gs.map(g=>{
+ return `<div class="section-head"><div><h2>El pronóstico del grupo</h2><p>La barra usa los porcentajes de confianza. Para el ranking, la mayoría se cuenta por cantidad de amigos, no por confianza.</p></div><span class="count-tag">${state.members.length} PARTICIPANTES</span></div><div class="projection"><div class="projection-row"><span class="matchup">PRECISIÓN COLECTIVA</span><strong>${accuracy.accuracy==null?'POR DEFINIR':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} aciertos en ${accuracy.judged} pronósticos individuales evaluados. · Consenso del grupo: ${collective.ratio===null?'sin partidos cerrados':collective.ratio+'%'} (${collective.correct}/${collective.judged}).</div></div>${gs.map(g=>{
   const v=getSupport(g),awayPct=v.total?Math.round(v.away/v.total*100):50,homePct=100-awayPct;
   const f=v.total?(v.away>v.home?g.away_name:v.home>v.away?g.home_name:'Empate en el grupo'):'Sin votos';
-  return `<div class="projection"><div class="projection-row"><div class="matchup">${escapeHtml(g.away_name)} <span style="color:#617083">vs.</span> ${escapeHtml(g.home_name)}<small>${v.participants} pronósticos · ${escapeHtml(duration(g.kickoff_at))}</small></div><strong>${escapeHtml(f)}</strong></div>${teamBar(g,awayPct,homePct,!!v.total)}<div class="bar-labels"><span>${escapeHtml(g.away_team)} ${v.total?awayPct+'%':'—'}</span><span>${v.total?homePct+'%':'—'} ${escapeHtml(g.home_team)}</span></div></div>`;
+  return `<div class="projection"><div class="projection-row"><div class="matchup">${escapeHtml(g.away_name)} <span style="color:#617083">vs.</span> ${escapeHtml(g.home_name)}<small>${v.participants} pronósticos · ${escapeHtml(duration(g.kickoff_at))}</small></div><strong>${escapeHtml(f)}</strong></div>${teamBar(g,awayPct,homePct,!!v.total)}<div class="bar-labels"><span>${escapeHtml(g.away_team)} ${v.total?awayPct+'%':'—'} · ${v.awayVotes} votos</span><span>${v.homeVotes} votos · ${v.total?homePct+'%':'—'} ${escapeHtml(g.home_team)}</span></div></div>`;
  }).join('')}<p class="fineprint">Estos porcentajes son respaldo ponderado del grupo, no la probabilidad estadística de victoria de los equipos.</p>`;
 }
 function renderParlay(){
@@ -420,8 +463,8 @@ function renderParlay(){
 }
 function renderRanking(){
  const leaders=memberStats(state.scope),accuracy=totalGroupAccuracy(state.scope),onWeek=state.scope==='week';
- const dates=state.allGames.filter(g=>g.season===state.season&&g.week===state.week),max=dates.length*100;
- return `<div class="section-head"><div><h2>El marcador de la liga</h2><p>El orden se determina por puntos de confianza acertados.</p></div><span class="count-tag">${onWeek?`${max} PTS POSIBLES`:'TEMPORADA '+state.season}</span></div><div style="display:flex;gap:8px;margin:0 0 17px"><button class="button ${onWeek?'button-primary':'button-ghost'}" data-scope="week">Esta semana</button><button class="button ${!onWeek?'button-primary':'button-ghost'}" data-scope="season">Temporada</button></div><div class="projection"><div class="projection-row"><div><div class="matchup">PRECISIÓN DEL GRUPO</div><span class="forecast-info">Todos los picks evaluados ${onWeek?'esta semana':'en la temporada'}</span></div><strong style="font-size:23px">${accuracy.accuracy==null?'—':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} correctos de ${accuracy.judged} pronósticos finalizados</div></div><div class="ranking-list">${leaders.map((r,i)=>`<div class="rank-card"><div class="rank-pos">${String(i+1).padStart(2,'0')}</div><div><div class="rank-name">${escapeHtml(r.nickname)} ${r.user_id===state.user?.id?'<span style="color:#9edc6a;font-size:10px">(TÚ)</span>':''}</div><div class="rank-detail">${r.correct} aciertos / ${r.judged} evaluados · ${r.judged?Math.round(r.precision*100)+'%':'Sin resultados'} de precisión</div></div><div class="rank-score">${r.points}<small>PUNTOS</small></div></div>`).join('')||'<div class="empty-state">Aún no hay participantes.</div>'}</div>`;
+ const dates=state.allGames.filter(g=>g.season===state.season&&g.week===state.week),max=dates.length*SCORE_MINORITY;
+ return `<div class="section-head"><div><h2>El marcador de la liga</h2><p>+30 por acertar con la mayoría (o en empate de votos). +50 por acertar contra la mayoría. Fallar = 0. Tu % de confianza no suma puntos.</p></div><span class="count-tag">${onWeek?`${max} PTS POSIBLES`:'TEMPORADA '+state.season}</span></div><div style="display:flex;gap:8px;margin:0 0 17px"><button class="button ${onWeek?'button-primary':'button-ghost'}" data-scope="week">Esta semana</button><button class="button ${!onWeek?'button-primary':'button-ghost'}" data-scope="season">Temporada</button></div><div class="projection"><div class="projection-row"><div><div class="matchup">PRECISIÓN DEL GRUPO</div><span class="forecast-info">Todos los picks evaluados ${onWeek?'esta semana':'en la temporada'}</span></div><strong style="font-size:23px">${accuracy.accuracy==null?'—':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} correctos de ${accuracy.judged} pronósticos finalizados</div></div><div class="ranking-list">${leaders.map((r,i)=>`<div class="rank-card"><div class="rank-pos">${String(i+1).padStart(2,'0')}</div><div><div class="rank-name">${escapeHtml(r.nickname)} ${r.user_id===state.user?.id?'<span style="color:#9edc6a;font-size:10px">(TÚ)</span>':''}</div><div class="rank-detail">${r.correct} aciertos / ${r.judged} evaluados · ${r.judged?Math.round(r.precision*100)+'%':'Sin resultados'} de precisión · ${r.minorityCorrect} contra la banda (+50) · ${r.majorityCorrect+r.tiedCorrect} con la banda/empate (+30)</div></div><div class="rank-score">${r.points}<small>PUNTOS</small></div></div>`).join('')||'<div class="empty-state">Aún no hay participantes.</div>'}</div>`;
 }
 function editTeam(gameId,team){
  const g=gamesWeek().find(g=>g.event_id===gameId);if(!g||locked(g))return;
@@ -474,6 +517,15 @@ function addParlayTab(){
  }
 }
 addParlayTab();
+// Las instrucciones originales del HTML explicaban la puntuacion antigua.
+// Se actualizan aqui para conservar la personalizacion de index.html.
+function updateRules(){
+ const rules=document.querySelector('.how-panel ol');
+ if(rules)rules.innerHTML=`<li>Elige el equipo que crees que va a ganar.</li><li>Usa el slider MOFE (0%) a LOCK (100%) para decir qué tan seguro estás. No suma ni resta puntos.</li><li>Si aciertas y tu equipo fue el más elegido: <b>+30 puntos</b>. Si aciertas contra la mayoría: <b>+50 puntos</b>.</li><li>Si la cantidad de votos quedó empatada y aciertas: <b>+30 puntos</b>. Si fallas: 0. El pick se bloquea al iniciar el juego.</li>`;
+ const note=document.querySelector('.forecast-panel .fineprint');
+ if(note)note.textContent='Proyección aproximada a partir de los votos del grupo. La mayoría se define por número de votos, no por porcentajes de confianza. No es una probabilidad real.';
+}
+updateRules();
 initializeAuthUI();
 $$('.tab').forEach(t=>t.addEventListener('click',()=>{state.tab=t.dataset.tab;render()}));
 async function goWeek(delta){const next=state.week+delta;if(next<1||next>18)return;state.week=next;state.tab='picks';if(isLive){resetDraft();render()}else await loadDemoWeek()}
