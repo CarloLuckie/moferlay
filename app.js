@@ -1,11 +1,11 @@
-/* SUNDAY CLUB — web app. Configura Supabase en config.js para modo multijugador. */
+/* MOFERLAY — quiniela de NFL compartida. */
 const $ = (q) => document.querySelector(q);
 const $$ = (q) => [...document.querySelectorAll(q)];
 const escapeHtml = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const number = (n) => new Intl.NumberFormat('es-MX',{maximumFractionDigits:1}).format(n);
 const cfg = window.NFL_PICKEM_CONFIG || {};
 const isLive = !!(cfg.supabaseUrl && cfg.supabaseAnonKey);
-const db = isLive && window.supabase ? window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseAnonKey) : null;
+const db = isLive && window.supabase ? window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseAnonKey,{auth:{persistSession:true,autoRefreshToken:true}}) : null;
 const YEAR = new Date().getUTCMonth() < 2 ? new Date().getUTCFullYear()-1 : new Date().getUTCFullYear();
 const START = new Date(`${YEAR}-09-10T00:00:00Z`).getTime();
 const initialWeek = Math.max(1,Math.min(18,Math.floor((Date.now()-START)/604800000)+1));
@@ -48,7 +48,7 @@ function toast(message){const el=$('#toast');el.textContent=message;el.classList
 function seedDemo(){
   const ids=['you','marcos','sofia','fer','luis'];
   const names=['Tú','Marcos','Sofía','Fer','Luis'];
-  state.group={id:'demo',name:'Sunday Crew'};
+  state.group={id:'demo',name:'MOFERLAY'};
   state.user={id:'you',nickname:'Tú'};
   state.members=ids.map((id,i)=>({user_id:id,nickname:names[i]}));
   const saved=JSON.parse(localStorage.getItem('sunday-club-demo-picks')||'null');
@@ -85,22 +85,92 @@ async function fetchEspn(season,week){
 async function boot(){
   if(!isLive){seedDemo();$('#account-name').textContent='Tú · Demo';await loadDemoWeek();return;}
   if(!db){fatal('No se pudo cargar el SDK de Supabase. Revisa la conexión.');return;}
-  $('#mode-badge').textContent='LIGA ONLINE';$('#mode-badge').className='pill pill-green';$('#demo-note').textContent='Cada pick se guarda para todos los participantes. Identidad vinculada a este navegador.';
+  $('#mode-badge').textContent='LIGA ONLINE';$('#mode-badge').className='pill pill-green';$('#demo-note').textContent='Tus picks se guardan en tu cuenta y puedes entrar desde celular o computadora.';
   try{
-    let {data:{user},error}=await db.auth.getUser();
-    if(!user){const auth=await db.auth.signInAnonymously();if(auth.error)throw auth.error;user=auth.data.user;}
+    const resultUser=await db.auth.getUser();
+    const user=resultUser.data?.user;
+    // Ya no se crean cuentas anónimas. Si existía una sesión antigua, solicitamos correo y contraseña.
+    if(!user || user.is_anonymous){showLogin();return;}
+    state.group=null;
     state.user={id:user.id,nickname:''};
-    const groupId=requestedGroup||localStorage.getItem('sunday-club-group');
+    // Recupera la liga de otro dispositivo aunque no tenga datos en localStorage.
+    let groupId=requestedGroup||localStorage.getItem('sunday-club-group');
     if(groupId){
-      const result=await db.from('group_members').select('nickname').eq('group_id',groupId).eq('user_id',user.id).maybeSingle();
-      if(result.error)throw result.error;
-      if(result.data){const group=await db.from('groups').select('id,name').eq('id',groupId).single();if(group.error)throw group.error;
-        state.group=group.data;state.user.nickname=result.data.nickname;localStorage.setItem('sunday-club-group',groupId);
+      const membership=await db.from('group_members').select('nickname').eq('group_id',groupId).eq('user_id',user.id).maybeSingle();
+      if(membership.error)throw membership.error;
+      if(membership.data){
+        const group=await db.from('groups').select('id,name').eq('id',groupId).single();
+        if(group.error)throw group.error;
+        state.group=group.data;state.user.nickname=membership.data.nickname;
       }
     }
-    if(!state.group){showSetup(!!groupId);return;}
+    if(!state.group && !requestedGroup){
+      // La membresía se guarda en Supabase; no depende del navegador o dispositivo.
+      const memberships=await db.from('group_members').select('group_id,nickname').eq('user_id',user.id).order('joined_at',{ascending:false}).limit(1);
+      if(memberships.error)throw memberships.error;
+      const member=memberships.data?.[0];
+      if(member){
+        groupId=member.group_id;
+        const group=await db.from('groups').select('id,name').eq('id',groupId).single();
+        if(group.error)throw group.error;
+        state.group=group.data;state.user.nickname=member.nickname;
+      }
+    }
+    if(!state.group){showSetup(!!requestedGroup);return;}
+    localStorage.setItem('sunday-club-group',state.group.id);
     await loadLive();subscribeChanges();
   }catch(e){fatal(`No se pudo iniciar la liga: ${e.message||e}`)}
+}
+// Inicio de sesión solo para cuentas creadas por el administrador en Supabase.
+function initializeAuthUI(){
+  if(!isLive)return;
+  const dialog=document.createElement('dialog');
+  dialog.id='login-dialog';dialog.className='modal login-modal';
+  dialog.innerHTML=`<form id="login-form" autocomplete="on">
+    <div class="modal-eyebrow">BIENVENIDO A MOFERLAY</div>
+    <h2>¿Qué onda? Entra a la quiniela.</h2>
+    <p>Usa el correo y la contraseña que te pasó el administrador de la liga.</p>
+    <label for="login-email">TU CORREO</label>
+    <input id="login-email" type="email" name="email" autocomplete="username" required placeholder="correo@ejemplo.com" />
+    <label for="login-password">TU CONTRASEÑA</label>
+    <input id="login-password" type="password" name="password" autocomplete="current-password" required placeholder="La que te asignaron" />
+    <p id="login-error" class="form-error" role="alert"></p>
+    <button class="button button-primary wide" type="submit" id="login-submit">Entrar a MOFERLAY</button>
+    <p class="fineprint">¿No tienes acceso? Pídeselo al administrador. Aquí nadie se registra por su cuenta.</p>
+  </form>`;
+  document.body.append(dialog);
+  const logout=document.createElement('button');
+  logout.type='button';logout.className='account-logout';logout.id='logout-btn';logout.textContent='Salir';
+  logout.title='Cerrar sesión en este dispositivo';
+  $('#account-name').after(logout);
+  logout.addEventListener('click',async()=>{
+    if(!confirm('¿Quieres cerrar tu sesión de MOFERLAY en este dispositivo?'))return;
+    const {error}=await db.auth.signOut();
+    if(error){toast('No pudimos cerrar la sesión: '+error.message);return;}
+    window.location.reload();
+  });
+  $('#login-form').addEventListener('submit',async event=>{
+    event.preventDefault();
+    const email=$('#login-email').value.trim().toLowerCase();
+    const password=$('#login-password').value;
+    const button=$('#login-submit');button.disabled=true;
+    $('#login-error').textContent='';
+    try{
+      const {error}=await db.auth.signInWithPassword({email,password});
+      if(error)throw error;
+      $('#login-password').value='';dialog.close();
+      await boot();
+    }catch(error){
+      $('#login-error').textContent='No se pudo entrar. Revisa tu correo y contraseña, y confirma con el administrador que tu cuenta esté activa.';
+      console.warn('MOFERLAY login failed:',error.message);
+    }finally{button.disabled=false;}
+  });
+}
+function showLogin(){
+  const dialog=$('#login-dialog');
+  if(!dialog){fatal('No se pudo abrir el inicio de sesión. Recarga la página.');return;}
+  if(!dialog.open)dialog.showModal();
+  $('#login-email').focus();
 }
 function fatal(message){$('#content').innerHTML=`<div class="empty-state">${escapeHtml(message)}</div>`;toast(message)}
 function showSetup(join){
@@ -147,6 +217,28 @@ async function loadDemoWeek(){
   }catch(e){state.allGames=state.season===2026&&state.week===5?DEMO_MATCHUPS:[];toast('Sin conexión con marcadores: se muestra el calendario de respaldo cuando está disponible.');}
   state.isLoading=false;resetDraft();render();
 }
+// PostgREST devuelve como máximo 1,000 filas por consulta de forma predeterminada.
+// Paginar evita truncar la clasificación de temporada cuando hay varios amigos.
+async function fetchAllPicks(groupId,season){
+  const pageSize=1000;
+  let offset=0;
+  const results=[];
+  while(true){
+    const page=await db.from('picks')
+      .select('group_id,user_id,season,week,event_id,pick_team,confidence')
+      .eq('group_id',groupId).eq('season',season)
+      .order('week',{ascending:true})
+      .order('event_id',{ascending:true})
+      .order('user_id',{ascending:true})
+      .range(offset,offset+pageSize-1);
+    if(page.error)throw page.error;
+    const rows=page.data||[];
+    results.push(...rows);
+    if(rows.length<pageSize)break;
+    offset+=rows.length;
+  }
+  return {data:results};
+}
 async function loadLive(){
   // Retener picks locales no guardados mientras llegan cambios de otros usuarios.
   const draftCopy=structuredClone(state.draft);
@@ -159,7 +251,7 @@ async function loadLive(){
   try{
     const [members,picks,games]=await Promise.all([
       db.from('group_members').select('user_id,nickname').eq('group_id',groupId),
-      db.from('picks').select('group_id,user_id,season,week,event_id,pick_team,confidence').eq('group_id',groupId).eq('season',state.season),
+      fetchAllPicks(groupId,state.season),
       db.from('games').select('*').eq('season',state.season).order('kickoff_at',{ascending:true})
     ]);
     if(members.error)throw members.error;if(picks.error)throw picks.error;if(games.error)throw games.error;
@@ -212,7 +304,47 @@ function consensusAccuracy(){
   return {correct,judged,ratio:judged?Math.round(100*correct/judged):null};
 }
 function topProjected(){return [...memberStats('week')].sort((a,b)=>b.projected-a.projected)[0]||null;}
-function getSupport(g){const ps=picksWeek().filter(p=>p.event_id===g.event_id);const away=ps.filter(p=>p.pick_team===g.away_team).reduce((s,p)=>s+p.confidence,0),home=ps.filter(p=>p.pick_team===g.home_team).reduce((s,p)=>s+p.confidence,0);return {away,home,total:away+home,participants:ps.length};}
+const TEAM_COLORS={
+ ARI:['#97233F','#FFB612'],ATL:['#A71930','#000000'],BAL:['#241773','#9E7C0C'],BUF:['#00338D','#C60C30'],
+ CAR:['#0085CA','#101820'],CHI:['#C83803','#0B162A'],CIN:['#FB4F14','#171717'],CLE:['#FF3C00','#311D00'],
+ DAL:['#003594','#869397'],DEN:['#FB4F14','#002244'],DET:['#0076B6','#B0B7BC'],GB:['#203731','#FFB612'],
+ HOU:['#03202F','#A71930'],IND:['#002C5F','#A2AAAD'],JAX:['#006778','#D7A22A'],KC:['#E31837','#FFB81C'],
+ LAC:['#0080C6','#FFC20E'],LAR:['#003594','#FFA300'],LA:['#003594','#FFA300'],LV:['#555555','#A5ACAF'],
+ MIA:['#008E97','#FC4C02'],MIN:['#4F2683','#FFC62F'],NE:['#002244','#C60C30'],NO:['#D3BC8D','#101820'],
+ NYG:['#0B2265','#A71930'],NYJ:['#125740','#FFFFFF'],PHI:['#004C54','#A5ACAF'],PIT:['#FFB612','#101820'],
+ SF:['#AA0000','#B3995D'],SEA:['#002244','#69BE28'],TB:['#D50A0A','#FF7900'],TEN:['#0C2340','#4B92DB'],
+ WAS:['#5A1414','#FFB612'],WSH:['#5A1414','#FFB612']
+};
+function teamGradient(team){
+ const c=TEAM_COLORS[team]||['#47647F','#859BB0'];
+ return `linear-gradient(110deg,${c[0]},${c[1]})`;
+}
+function confidencePercent(confidence,n=gameConfidenceLimit()){
+ if(!confidence)return 0;
+ return n<=1?100:Math.round((Number(confidence)-1)/(n-1)*100);
+}
+function getSupport(g){
+ const ps=picksWeek().filter(p=>p.event_id===g.event_id),away=ps.filter(p=>p.pick_team===g.away_team).reduce((s,p)=>s+p.confidence,0),home=ps.filter(p=>p.pick_team===g.home_team).reduce((s,p)=>s+p.confidence,0);
+ return {away,home,total:away+home,participants:ps.length,ballots:ps};
+}
+function teamBar(g,awayPct,homePct,hasVotes=true){
+ return `<div class="bar team-bar" role="img" aria-label="${escapeHtml(g.away_name)} ${hasVotes?awayPct+'%':'sin votos'}; ${escapeHtml(g.home_name)} ${hasVotes?homePct+'%':'sin votos'}">
+ <span class="team-bar-side" style="width:${awayPct}%;background:${hasVotes?teamGradient(g.away_team):'#394554'}"></span>
+ <span class="team-bar-side" style="width:${homePct}%;background:${hasVotes?teamGradient(g.home_team):'#394554'}"></span></div>`;
+}
+function parlayConsensus(){
+ return gamesWeek().map(g=>{
+   const v=getSupport(g);const drawn=v.total>0 && v.away===v.home;
+   const team=v.total&&!drawn?(v.away>v.home?g.away_team:g.home_team):null;
+   const name=team===g.away_team?g.away_name:g.home_name;
+   const support=team?(team===g.away_team?v.away:v.home)/v.total:0;
+   const ballots=v.ballots;
+   const complete=state.members.length>0 && ballots.length===state.members.length;
+   const lock=complete && ballots.length>0 && ballots.every(p=>p.pick_team===team && confidencePercent(p.confidence,gamesWeek().length)>=80);
+   return {g,v,team,name,support,complete,lock,drawn};
+ });
+}
+
 function render(){
   $('#season-label').textContent=state.season;
   $('#week-label').textContent=`SEMANA ${String(state.week).padStart(2,'0')}`;
@@ -231,7 +363,7 @@ function render(){
   $('#forecast').innerHTML=projected?`<div class="forecast-person">${escapeHtml(projected.nickname)}</div><div class="forecast-score">${number(projected.projected)} <small style="font-size:12px;color:#9cacbc;letter-spacing:0">pts esperados</small></div><div class="forecast-info">${number(projected.points)} puntos confirmados · líder proyectado de la semana</div>`:'<span class="forecast-info">Aún no hay pronósticos.</span>';
   if(state.isLoading){$('#content').innerHTML='<div class="empty-state">Cargando partidos y votos…</div>';return}
   if(state.lastError){$('#content').innerHTML=`<div class="empty-state">${escapeHtml(state.lastError)}<p>Revisa las credenciales y las políticas de Supabase.</p></div>`;return}
-  $('#content').innerHTML=state.tab==='picks'?renderPicks():state.tab==='consensus'?renderConsensus():renderRanking();
+  $('#content').innerHTML=state.tab==='picks'?renderPicks():state.tab==='consensus'?renderConsensus():state.tab==='parlay'?renderParlay():renderRanking();
 }
 function logo(team,name,url){
   if(url && /^https:\/\//.test(url))return `<img class="team-logo" loading="lazy" src="${escapeHtml(url)}" alt="" />`;
@@ -244,12 +376,12 @@ function renderPicks(){
     const d=state.draft[g.event_id]||{},isLocked=locked(g),isFinal=g.status==='post';
     const team=(side)=>{const name=side==='home'?g.home_name:g.away_name,short=side==='home'?g.home_team:g.away_team,lg=side==='home'?g.home_logo:g.away_logo;
       return `<button type="button" class="team ${d.team===short?'selected':''} ${isFinal&&g.winner===short?'won':''}" data-pick="${escapeHtml(g.event_id)}" data-team="${escapeHtml(short)}" ${isLocked?'disabled':''}>${logo(short,name,lg)}<span><b>${escapeHtml(name)}</b><small>${d.team===short?'TU ELECCIÓN':side==='home'?'LOCAL':'VISITANTE'}</small></span></button>`};
-    const options=Array.from({length:n},(_,i)=>n-i).map(c=>`<option value="${c}" ${Number(d.confidence)===c?'selected':''}>${c} PUNTOS</option>`).join('');
+    const pct=confidencePercent(d.confidence,n);
     const date=duration(g.kickoff_at).toUpperCase();
-    return `<article class="game"><div class="game-top"><span>${escapeHtml(date)} · ${escapeHtml(g.event_id.startsWith('demo-')?'NFL':'NFL')}</span><span class="${isFinal?'final':''}">${isFinal?'FINAL':g.status==='in'?'EN VIVO':isLocked?'CERRADO':'ABIERTO'}${g.home_score!=null&&g.away_score!=null?' · '+escapeHtml(g.away_score)+' – '+escapeHtml(g.home_score):''}</span></div><div class="game-bottom"><div class="teams">${team('away')}<span class="vs">VS</span>${team('home')}</div><div class="confidence"><label for="confidence-${escapeHtml(g.event_id)}">CONFIANZA</label><select id="confidence-${escapeHtml(g.event_id)}" data-confidence="${escapeHtml(g.event_id)}" ${isLocked||!d.team?'disabled':''}><option value="">ELEGIR</option>${options}</select></div></div></article>`;
+    return `<article class="game"><div class="game-top"><span>${escapeHtml(date)} · ${escapeHtml(g.event_id.startsWith('demo-')?'NFL':'NFL')}</span><span class="${isFinal?'final':''}">${isFinal?'FINAL':g.status==='in'?'EN VIVO':isLocked?'CERRADO':'ABIERTO'}${g.home_score!=null&&g.away_score!=null?' · '+escapeHtml(g.away_score)+' – '+escapeHtml(g.home_score):''}</span></div><div class="game-bottom"><div class="teams">${team('away')}<span class="vs">VS</span>${team('home')}</div><div class="confidence"><div class="confidence-heading"><label for="confidence-${escapeHtml(g.event_id)}">¿QUÉ TAN SEGURO?</label><strong class="confidence-value" data-percent-for="${escapeHtml(g.event_id)}">${d.team?pct+'%':'—'}</strong></div><input type="range" min="1" max="${n}" step="1" id="confidence-${escapeHtml(g.event_id)}" data-confidence="${escapeHtml(g.event_id)}" value="${Number(d.confidence)||1}" style="--progress:${pct}%" ${isLocked||!d.team?'disabled':''} aria-label="Confianza: MOFE a LOCK"/><div class="confidence-extremes"><span>MOFE</span><span>LOCK</span></div></div></div></article>`;
   }).join('');
   const changed=JSON.stringify(Object.entries(state.draft).sort())!==JSON.stringify(Object.entries(Object.fromEntries(mine().map(p=>[p.event_id,{team:p.pick_team,confidence:p.confidence}]))).sort());
-  return `<div class="section-head"><div><h2>Mis picks de la semana</h2><p>Escoge al ganador y asigna confianza del 1 al ${n}, sin repetir números.</p></div><span class="count-tag">${closed} CERRADOS · ${n-closed} ABIERTOS</span></div><div class="games">${blocks}</div><div class="foot-action"><p>${changed?'<span class="save-status">Cambios sin guardar</span>':'Puedes editar hasta el inicio de cada juego.'}<br />Los picks cerrados ya no se pueden modificar.</p><button class="button button-primary" id="save-picks" ${state.isSaving?'disabled':''}>${state.isSaving?'Guardando…':'Guardar mis pronósticos →'}</button></div>`;
+  return `<div class="section-head"><div><h2>Mis picks de la semana</h2><p>Elige al ganador y ajusta la confianza: MOFE = duda total, LOCK = máxima seguridad. Cada nivel se usa una vez.</p></div><span class="count-tag">${closed} CERRADOS · ${n-closed} ABIERTOS</span></div><div class="games">${blocks}</div><div class="foot-action"><p>${changed?'<span class="save-status">Cambios sin guardar</span>':'Los porcentajes son niveles de confianza, no puntos del marcador. Puedes editar hasta el kickoff.'}<br />Los picks cerrados ya no se pueden modificar.</p><button class="button button-primary" id="save-picks" ${state.isSaving?'disabled':''}>${state.isSaving?'Guardando…':'Guardar mis pronósticos →'}</button></div>`;
 }
 function renderConsensus(){
  const gs=gamesWeek(),accuracy=totalGroupAccuracy('week'),collective=consensusAccuracy();
@@ -257,8 +389,33 @@ function renderConsensus(){
  return `<div class="section-head"><div><h2>El pronóstico del grupo</h2><p>Cuánto respaldo tiene cada equipo, ponderando el nivel de confianza.</p></div><span class="count-tag">${state.members.length} PARTICIPANTES</span></div><div class="projection"><div class="projection-row"><span class="matchup">PRECISIÓN COLECTIVA</span><strong>${accuracy.accuracy==null?'POR DEFINIR':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} aciertos en ${accuracy.judged} pronósticos individuales evaluados. · Consenso del grupo: ${collective.ratio===null?'sin partidos cerrados':collective.ratio+'%'} (${collective.correct}/${collective.judged}).</div></div>${gs.map(g=>{
   const v=getSupport(g),awayPct=v.total?Math.round(v.away/v.total*100):50,homePct=100-awayPct;
   const f=v.total?(v.away>v.home?g.away_name:v.home>v.away?g.home_name:'Empate en el grupo'):'Sin votos';
-  return `<div class="projection"><div class="projection-row"><div class="matchup">${escapeHtml(g.away_name)} <span style="color:#617083">vs.</span> ${escapeHtml(g.home_name)}<small>${v.participants} pronósticos · ${escapeHtml(duration(g.kickoff_at))}</small></div><strong>${escapeHtml(f)}</strong></div><div class="bar"><span class="fill" style="width:${awayPct}%"></span></div><div class="bar-labels"><span>${escapeHtml(g.away_team)} ${v.total?awayPct+'%':'—'}</span><span>${v.total?homePct+'%':'—'} ${escapeHtml(g.home_team)}</span></div></div>`;
+  return `<div class="projection"><div class="projection-row"><div class="matchup">${escapeHtml(g.away_name)} <span style="color:#617083">vs.</span> ${escapeHtml(g.home_name)}<small>${v.participants} pronósticos · ${escapeHtml(duration(g.kickoff_at))}</small></div><strong>${escapeHtml(f)}</strong></div>${teamBar(g,awayPct,homePct,!!v.total)}<div class="bar-labels"><span>${escapeHtml(g.away_team)} ${v.total?awayPct+'%':'—'}</span><span>${v.total?homePct+'%':'—'} ${escapeHtml(g.home_team)}</span></div></div>`;
  }).join('')}<p class="fineprint">Estos porcentajes son respaldo ponderado del grupo, no la probabilidad estadística de victoria de los equipos.</p>`;
+}
+function renderParlay(){
+ const decisions=parlayConsensus();
+ if(!decisions.length)return '<div class="empty-state">Primero hay que cargar los partidos de la semana.</div>';
+ const valid=decisions.filter(d=>d.team).sort((a,b)=>Number(b.complete)-Number(a.complete)||b.support-a.support||b.v.ballots.length-a.v.ballots.length);
+ const lockedPicks=valid.filter(d=>d.lock);
+ const everyone=state.members.length;
+ const picksMarkup=(data,empty)=>data.length?data.map(({g,team,name,support,complete,lock,v})=>{
+   const pct=Math.round(support*100);
+   const pending=Math.max(0,everyone-v.ballots.length);
+   const winnerStatus=g.status==='post'?(g.winner===team?'ACERTAMOS':'FALLAMOS'):g.status==='in'?'EN JUEGO':'POR JUGAR';
+   return `<div class="parlay-leg" style="--team-edge:${TEAM_COLORS[team]?.[0]||'#b4f268'}">
+     <div class="parlay-leg-main"><div class="parlay-team">${logo(team,name,team===g.away_team?g.away_logo:g.home_logo)}<div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(g.away_team)} vs. ${escapeHtml(g.home_team)} · ${escapeHtml(duration(g.kickoff_at))}</small></div></div>
+       <div class="parlay-metric"><strong>${pct}%</strong><small>RESPALDO</small></div></div>
+     <div class="parlay-leg-foot"><span>${v.ballots.length}/${everyone} votos · ${complete?'la banda ya votó':pending+' por votar'}</span><span>${lock?'LOCK DE TODOS · ':''}${winnerStatus}</span></div>
+   </div>`;
+ }).join(''):`<div class="empty-state">${empty}</div>`;
+ const tentative=valid.some(d=>!d.complete);
+ return `<div class="section-head"><div><h2>El parlay de la banda</h2><p>Aquí se arma la combinada con los picks de TODOS. No mostramos boletas individuales.</p></div><span class="count-tag">${everyone} EN LA LIGA</span></div>
+ <div class="parlay-summary"><div><span class="parlay-kicker">LA COMBINADA DEL GRUPO</span><strong>${valid.length} selecciones</strong><p>Elegimos el equipo con mayor suma de confianza en cada juego. ${tentative?'Algunos picks todavía son provisionales hasta que vote toda la banda.':'Todos los participantes ya votaron en los picks marcados como completos.'}</p></div><span class="parlay-count">${valid.length}/${decisions.length}</span></div>
+ <div class="parlay-list">${picksMarkup(valid,'Todavía no hay votos para armar la combinada de esta semana.')}</div>
+ ${decisions.some(d=>d.drawn)?'<p class="parlay-caution">Los juegos empatados en respaldo no entran en la combinada hasta romper el empate.</p>':''}
+ <div class="section-head lock-head"><div><h2>LOCK de la banda</h2><p>Solo entra si TODOS eligieron el mismo equipo y cada uno le dio al menos 80% de confianza.</p></div><span class="count-tag">${lockedPicks.length} LOCKS</span></div>
+ <div class="parlay-list">${picksMarkup(lockedPicks,'Aún no tenemos un LOCK unánime de 80% o más. Falta convencer a la banda.')}</div>
+ <p class="fineprint">MOFERLAY solo organiza el consenso de sus integrantes. No genera boletos, cuotas ni apuestas. Un LOCK no garantiza que gane el equipo.</p>`;
 }
 function renderRanking(){
  const leaders=memberStats(state.scope),accuracy=totalGroupAccuracy(state.scope),onWeek=state.scope==='week';
@@ -269,14 +426,14 @@ function editTeam(gameId,team){
  const g=gamesWeek().find(g=>g.event_id===gameId);if(!g||locked(g))return;
  const d=state.draft[gameId];if(d?.team===team){delete state.draft[gameId];render();return;}
  let confidence=d?.confidence;
- if(!confidence){const taken=new Set(Object.values(state.draft).map(v=>v.confidence));confidence=Array.from({length:gameConfidenceLimit()},(_,i)=>gameConfidenceLimit()-i).find(n=>!taken.has(n))||null;}
+ if(!confidence){const taken=new Set(Object.values(state.draft).map(v=>v.confidence));confidence=Array.from({length:gameConfidenceLimit()},(_,i)=>i+1).find(n=>!taken.has(n))||null;}
  state.draft[gameId]={team,confidence};render();
 }
 function changeConfidence(gameId,value){
  const g=gamesWeek().find(g=>g.event_id===gameId),current=state.draft[gameId];if(!g||locked(g)||!current?.team)return;
  const val=Number(value)||null;
  const occupant=Object.entries(state.draft).find(([id,d])=>id!==gameId&&d.confidence===val);
- if(occupant){const occGame=gamesWeek().find(g=>g.event_id===occupant[0]);if(occGame&&locked(occGame)){toast('Esa confianza ya quedó bloqueada en otro partido.');render();return;}
+ if(occupant){const occGame=gamesWeek().find(g=>g.event_id===occupant[0]);if(occGame&&locked(occGame)){toast('Ese nivel ya quedó bloqueado en otro partido.');render();return;}
    state.draft[occupant[0]]={...occupant[1],confidence:current.confidence||null};}
  state.draft[gameId]={...current,confidence:val};render();
 }
@@ -286,7 +443,7 @@ async function savePicks(){
  const toSave=open.filter(g=>state.draft[g.event_id]?.team).map(g=>({event_id:g.event_id,pick_team:state.draft[g.event_id].team,confidence:Number(state.draft[g.event_id].confidence)}));
  if(toSave.some(p=>!p.confidence)){toast('Asigna una confianza a cada partido elegido.');return;}
  const ranks=[...toSave,...all.filter(locked).map(g=>{const v=state.draft[g.event_id];return v?{confidence:v.confidence}:null}).filter(Boolean)].map(p=>p.confidence);
- if(new Set(ranks).size!==ranks.length){toast('No puedes repetir un número de confianza.');return;}
+ if(new Set(ranks).size!==ranks.length){toast('Cada porcentaje equivale a un nivel de confianza único. Ajusta tus sliders.');return;}
  state.isSaving=true;render();
  try{
   if(isLive){const r=await db.rpc('submit_week_picks',{p_group_id:state.group.id,p_season:state.season,p_week:state.week,p_picks:toSave});if(r.error)throw r.error;await loadLive();}
@@ -300,7 +457,23 @@ async function savePicks(){
  finally{state.isSaving=false;render()}
 }
 $('#content').addEventListener('click',e=>{const p=e.target.closest('[data-pick]');if(p)return editTeam(p.dataset.pick,p.dataset.team);const scope=e.target.closest('[data-scope]');if(scope){state.scope=scope.dataset.scope;render();return}if(e.target.closest('#save-picks'))savePicks()});
+$('#content').addEventListener('input',e=>{
+  if(!e.target.matches('input[type=range][data-confidence]'))return;
+  const pct=confidencePercent(e.target.value);
+  const out=$(`[data-percent-for="${e.target.dataset.confidence}"]`);
+  if(out)out.textContent=pct+'%';
+  e.target.style.setProperty('--progress',pct+'%');
+});
 $('#content').addEventListener('change',e=>{if(e.target.matches('[data-confidence]'))changeConfidence(e.target.dataset.confidence,e.target.value)});
+function addParlayTab(){
+ const tabs=$('.tabs');
+ if(tabs && !tabs.querySelector('[data-tab="parlay"]')){
+   const tab=document.createElement('button');tab.className='tab';tab.dataset.tab='parlay';tab.type='button';tab.textContent='Parlay de la banda';
+   tabs.append(tab);
+ }
+}
+addParlayTab();
+initializeAuthUI();
 $$('.tab').forEach(t=>t.addEventListener('click',()=>{state.tab=t.dataset.tab;render()}));
 async function goWeek(delta){const next=state.week+delta;if(next<1||next>18)return;state.week=next;state.tab='picks';if(isLive){resetDraft();render()}else await loadDemoWeek()}
 $('#prev-week').addEventListener('click',()=>goWeek(-1));$('#next-week').addEventListener('click',()=>goWeek(1));
