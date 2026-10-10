@@ -421,7 +421,7 @@ function render(){
   $('#content').innerHTML=state.tab==='picks'?renderPicks():state.tab==='consensus'?renderConsensus():state.tab==='parlay'?renderParlay():renderRanking();
 }
 function logo(team,name,url){
-  if(url && /^https:\/\//.test(url))return `<img class="team-logo" loading="lazy" src="${escapeHtml(url)}" alt="" />`;
+  if(url && /^https:\/\//.test(url))return `<img class="team-logo" loading="lazy" src="${escapeHtml(url)}" data-team="${escapeHtml(team)}" alt="" />`;
   return `<span class="team-abbr">${escapeHtml(team)}</span>`;
 }
 function renderPicks(){
@@ -448,6 +448,68 @@ function renderConsensus(){
  }).join('')}<p class="fineprint">Estos porcentajes muestran la proporción de votos de tus amigos, no probabilidades reales de victoria. El slider individual solo sirve para el promedio de confianza del LOCK.</p>`;
 }
 
+// Exporta únicamente la tarjeta elegida, no toda la pantalla.
+// Los logos de ESPN se reemplazan por siglas SOLO en la copia para evitar
+// restricciones CORS al convertir la tarjeta a una imagen PNG.
+async function downloadParlayCard(cardId, button){
+  const source=document.getElementById(cardId);
+  if(!source){toast('No encontramos la tarjeta del parlay.');return;}
+  if(typeof window.html2canvas!=='function'){
+    toast('No se cargó el generador de imágenes. Actualiza la página e inténtalo de nuevo.');
+    return;
+  }
+  if(button?.disabled)return;
+  const originalText=button?.textContent;
+  let stage;
+  if(button){button.disabled=true;button.textContent='Generando imagen…';}
+  try{
+    stage=document.createElement('div');
+    stage.className='share-export-stage';
+    const copy=source.cloneNode(true);
+    copy.removeAttribute('id');
+    copy.classList.add('share-card-export');
+    // Una anchura fija produce un PNG legible aun cuando se usa en celular.
+    copy.style.width='760px';
+    copy.style.maxWidth='none';
+    copy.style.margin='0';
+    copy.querySelectorAll('img.team-logo').forEach(img=>{
+      const abbr=document.createElement('span');
+      abbr.className='team-abbr';
+      abbr.textContent=img.dataset.team||'NFL';
+      img.replaceWith(abbr);
+    });
+    stage.appendChild(copy);
+    document.body.appendChild(stage);
+    if(document.fonts?.ready)await document.fonts.ready;
+    const canvas=await window.html2canvas(copy,{
+      backgroundColor:'#101722',
+      scale:2,
+      useCORS:false,
+      logging:false,
+      windowWidth:1024
+    });
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/png'));
+    if(!blob)throw new Error('No se pudo convertir la tarjeta a PNG.');
+    const kind=cardId==='moferlay-lock-image'?'lock':'parlay';
+    const name=`moferlay-${kind}-${state.season}-semana-${String(state.week).padStart(2,'0')}.png`;
+    const url=URL.createObjectURL(blob);
+    const link=document.createElement('a');
+    link.download=name;
+    link.href=url;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),10000);
+    toast('Imagen descargada. Ya puedes mandarla al grupo.');
+  }catch(error){
+    console.error('MOFERLAY: fallo al exportar el parlay',error);
+    toast('No se pudo crear la imagen. Inténtalo nuevamente.');
+  }finally{
+    stage?.remove();
+    if(button){button.disabled=false;button.textContent=originalText;}
+  }
+}
+
 function renderParlay(){
  const decisions=parlayConsensus();
  if(!decisions.length)return '<div class="empty-state">Primero hay que cargar los partidos de la semana.</div>';
@@ -467,11 +529,20 @@ function renderParlay(){
    </div>`;
  }).join(''):`<div class="empty-state">${empty}</div>`;
  return `<div class="section-head"><div><h2>El parlay de la banda</h2><p>Se elige al equipo con MÁS VOTOS. Cada amigo cuenta igual, aunque haya puesto MOFE o LOCK.</p></div><span class="count-tag">${everyone} EN LA LIGA</span></div>
- <div class="parlay-summary"><div><span class="parlay-kicker">LA COMBINADA DEL GRUPO</span><strong>${valid.length} selecciones listas</strong><p>Con 5 votos, el equipo elegido tendrá al menos 3. ${pending?`Hay ${pending} partido(s) pendiente(s) de que todos voten.`:'Todos los partidos tienen los votos completos.'} La confianza NO cambia quién queda en el parlay.</p></div><span class="parlay-count">${valid.length}/${decisions.length}</span></div>
- <div class="parlay-list">${picksMarkup(valid,'Cuando los 5 hayan votado por un partido, aparecerá aquí la elección mayoritaria.')}</div>
- <div class="section-head lock-head"><div><h2>LOCK de la banda</h2><p>Entre los que eligieron al equipo mayoritario, la confianza PROMEDIO debe superar el 70% y todos deben haber votado.</p></div><span class="count-tag">${locks.length} LOCKS</span></div>
- <div class="parlay-list">${picksMarkup(locks,'Todavía no hay partidos con promedio de confianza superior al 70% entre quienes apoyan al favorito.')}</div>
- <p class="fineprint">LOCK significa alta confianza declarada por el grupo, no una garantía de resultado ni una probabilidad real de ganar. MOFERLAY no genera boletos ni gestiona apuestas.</p>`;
+ <div class="share-download-row"><button class="button button-primary" type="button" data-download-card="moferlay-parlay-image">Descargar parlay en PNG ↓</button><button class="button button-outline" type="button" data-download-card="moferlay-lock-image">Descargar LOCK en PNG ↓</button></div>
+ <section class="share-card" id="moferlay-parlay-image" aria-label="Tarjeta del parlay de la banda">
+   <div class="share-card-head"><div class="share-card-kicker">MOFERLAY · NFL ${state.season} · SEMANA ${String(state.week).padStart(2,'0')}</div><h3>PARLAY DE LA BANDA</h3><p>Los picks que eligió la mayoría. Aquí cada cabeza es un voto.</p></div>
+   <div class="parlay-summary"><div><span class="parlay-kicker">LA COMBINADA DEL GRUPO</span><strong>${valid.length} selecciones listas</strong><p>${pending?`Hay ${pending} partido(s) pendiente(s) de que todos voten.`:'La banda ya votó en todos los partidos.'} La confianza no decide la combinada.</p></div><span class="parlay-count">${valid.length}/${decisions.length}</span></div>
+   <div class="parlay-list">${picksMarkup(valid,'Cuando los 5 hayan votado por un partido, aparecerá aquí la elección mayoritaria.')}</div>
+   <div class="share-card-footer">MOFERLAY · LA BANDA DECIDE · LOS PICKS NO SON GARANTÍAS</div>
+ </section>
+ <div class="section-head lock-head"><div><h2>LOCK de la banda</h2><p>Solo los equipos elegidos por mayoría con confianza promedio mayor a 70% entre quienes los votaron, y con todos los votos enviados.</p></div><span class="count-tag">${locks.length} LOCKS</span></div>
+ <section class="share-card share-card-lock" id="moferlay-lock-image" aria-label="Tarjeta de los LOCK de la banda">
+   <div class="share-card-head"><div class="share-card-kicker">MOFERLAY · NFL ${state.season} · SEMANA ${String(state.week).padStart(2,'0')}</div><h3>LOCK DE LA BANDA</h3><p>Mayoría de votos + confianza promedio superior a 70%.</p></div>
+   <div class="parlay-list">${picksMarkup(locks,'Aún no hay partidos con confianza promedio mayor a 70% entre quienes votaron por el favorito.')}</div>
+   <div class="share-card-footer">MOFERLAY · LOCK ES CONFIANZA, NO CERTEZA</div>
+ </section>
+ <p class="fineprint">El parlay es solo el consenso de amigos. MOFERLAY no genera apuestas, boletos ni probabilidades reales.</p>`;
 }
 
 function renderRanking(){
@@ -513,7 +584,15 @@ async function savePicks(){
  }catch(e){toast('No se pudieron guardar los picks: '+(e.message||e));}
  finally{state.isSaving=false;render()}
 }
-$('#content').addEventListener('click',e=>{const p=e.target.closest('[data-pick]');if(p)return editTeam(p.dataset.pick,p.dataset.team);const scope=e.target.closest('[data-scope]');if(scope){state.scope=scope.dataset.scope;render();return}if(e.target.closest('#save-picks'))savePicks()});
+$('#content').addEventListener('click',e=>{
+ const download=e.target.closest('[data-download-card]');
+ if(download){downloadParlayCard(download.dataset.downloadCard,download);return;}
+ const p=e.target.closest('[data-pick]');
+ if(p)return editTeam(p.dataset.pick,p.dataset.team);
+ const scope=e.target.closest('[data-scope]');
+ if(scope){state.scope=scope.dataset.scope;render();return;}
+ if(e.target.closest('#save-picks'))savePicks();
+});
 $('#content').addEventListener('input',e=>{
   if(!e.target.matches('input[type=range][data-confidence]'))return;
   const pct=confidencePercent(e.target.value);

@@ -48,3 +48,22 @@
  .parlay-summary strong{font-size:20px}
  .parlay-count{font-size:22px}
 }
+
+
+/* Tarjetas de parlay listas para convertir en imagen y enviar por WhatsApp. */
+.share-download-row{display:flex;gap:10px;flex-wrap:wrap;margin:4px 0 18px}
+.share-download-row .button{gap:8px}
+.share-card{border:1px solid #374a5c;border-radius:16px;padding:20px;background:radial-gradient(ellipse at 95% 0%,rgba(180,242,104,.13),transparent 52%),linear-gradient(160deg,#151f2b,#0d1622);margin:0 0 22px;overflow:hidden}
+.share-card-lock{border-color:#637b42;background:radial-gradient(ellipse at 95% 0%,rgba(180,242,104,.18),transparent 52%),linear-gradient(160deg,#1b2925,#101a24)}
+.share-card-head{padding:3px 2px 19px}
+.share-card-kicker{font-size:11px;font-weight:900;letter-spacing:2.1px;color:#b4f268;margin-bottom:10px}
+.share-card-head h3{font-size:clamp(24px,3vw,34px);letter-spacing:-1px;font-weight:1000;line-height:1.1;margin:0 0 9px;color:#f2f6fa}
+.share-card-head p{color:#9db0bc;line-height:1.5;font-size:12px;margin:0}
+.share-card .parlay-summary{margin-bottom:16px}
+.share-card-footer{border-top:1px solid #324252;margin-top:17px;padding-top:15px;font-size:10px;letter-spacing:1.2px;font-weight:800;color:#95a8b5;text-align:center}
+.share-export-stage{position:fixed;left:-100000px;top:0;z-index:-1;pointer-events:none}
+.share-card-export{box-sizing:border-box}
+.share-card-export .parlay-leg-main{display:flex;flex-direction:row}
+.share-card-export .parlay-team{min-width:0}
+.share-card-export .parlay-metric{flex-shrink:0}
+@media(max-width:650px){.share-download-row{flex-direction:column}.share-download-row .button{width:100%}.share-card{padding:15px}.share-card-export{padding:24px}.share-card-export .share-card-head h3{font-size:34px}}
