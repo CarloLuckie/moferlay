@@ -336,10 +336,11 @@ function totalGroupAccuracy(scope='week'){
 function consensusAccuracy(){
   let correct=0,judged=0;
   for(const g of gamesWeek()){
-    if(g.status!=='post')continue;
-    const s=getSupport(g);
-    if(!s.total||s.home===s.away)continue;
-    const predicted=s.home>s.away?g.home_team:g.away_team;
+    if(g.status!=='post' || !g.winner)continue;
+    // La prediccion colectiva es por numero de votos, no confianza del slider.
+    const votes=gameVoteCounts(g);
+    if(!votes.total || votes.home===votes.away)continue;
+    const predicted=votes.home>votes.away?g.home_team:g.away_team;
     judged++;
     if(predicted===g.winner)correct++;
   }
@@ -367,25 +368,35 @@ function confidencePercent(confidence){
  return Math.max(0,Math.min(100,Math.round(Number(confidence))));
 }
 function getSupport(g){
- const ps=picksWeek().filter(p=>p.event_id===g.event_id),away=ps.filter(p=>p.pick_team===g.away_team).reduce((s,p)=>s+p.confidence,0),home=ps.filter(p=>p.pick_team===g.home_team).reduce((s,p)=>s+p.confidence,0);
- const votes=gameVoteCounts(g,ps);
- return {away,home,total:away+home,participants:ps.length,ballots:ps,awayVotes:votes.away,homeVotes:votes.home};
+ const ballots=picksWeek().filter(p=>p.event_id===g.event_id);
+ const votes=gameVoteCounts(g,ballots);
+ return {participants:ballots.length,ballots,awayVotes:votes.away,homeVotes:votes.home,totalVotes:votes.total};
 }
 function teamBar(g,awayPct,homePct,hasVotes=true){
  return `<div class="bar team-bar" role="img" aria-label="${escapeHtml(g.away_name)} ${hasVotes?awayPct+'%':'sin votos'}; ${escapeHtml(g.home_name)} ${hasVotes?homePct+'%':'sin votos'}">
  <span class="team-bar-side" style="width:${awayPct}%;background:${hasVotes?teamGradient(g.away_team):'#394554'}"></span>
  <span class="team-bar-side" style="width:${homePct}%;background:${hasVotes?teamGradient(g.home_team):'#394554'}"></span></div>`;
 }
+// Parlay: cada integrante cuenta como UN voto, sin importar su confianza.
+// Solo es definitivo cuando todos los integrantes de la liga votaron.
+// LOCK: el promedio de confianza ENTRE QUIENES eligieron al ganador es
+// estrictamente mayor al 70%. No requiere unanimidad.
 function parlayConsensus(){
  return gamesWeek().map(g=>{
-   const v=getSupport(g);const drawn=v.total>0 && v.away===v.home;
-   const team=v.total&&!drawn?(v.away>v.home?g.away_team:g.home_team):null;
-   const name=team===g.away_team?g.away_name:g.home_name;
-   const support=team?(team===g.away_team?v.away:v.home)/v.total:0;
-   const ballots=v.ballots;
-   const complete=state.members.length>0 && ballots.length===state.members.length;
-   const lock=complete && ballots.length>0 && ballots.every(p=>p.pick_team===team && confidencePercent(p.confidence,gamesWeek().length)>=80);
-   return {g,v,team,name,support,complete,lock,drawn};
+   const v=getSupport(g);
+   const countTie=v.homeVotes===v.awayVotes;
+   const everyone=state.members.length;
+   const complete=everyone>0 && v.totalVotes===everyone;
+   const team=!countTie&&v.totalVotes>0?(v.awayVotes>v.homeVotes?g.away_team:g.home_team):null;
+   const name=team===g.away_team?g.away_name:team===g.home_team?g.home_name:null;
+   const votesFor=team===g.away_team?v.awayVotes:team===g.home_team?v.homeVotes:0;
+   const support=team && v.totalVotes?votesFor/v.totalVotes:0;
+   const supporters=v.ballots.filter(p=>p.pick_team===team);
+   const avgConfidence=supporters.length
+     ? supporters.reduce((sum,p)=>sum+confidencePercent(p.confidence),0)/supporters.length
+     : 0;
+   const lock=complete&&!!team&&avgConfidence>70;
+   return {g,v,team,name,support,votesFor,avgConfidence,complete,lock,drawn:countTie&&v.totalVotes>0};
  });
 }
 
@@ -430,37 +441,39 @@ function renderPicks(){
 function renderConsensus(){
  const gs=gamesWeek(),accuracy=totalGroupAccuracy('week'),collective=consensusAccuracy();
  if(!gs.length)return '<div class="empty-state">No hay partidos en esta jornada.</div>';
- return `<div class="section-head"><div><h2>El pronóstico del grupo</h2><p>La barra usa los porcentajes de confianza. Para el ranking, la mayoría se cuenta por cantidad de amigos, no por confianza.</p></div><span class="count-tag">${state.members.length} PARTICIPANTES</span></div><div class="projection"><div class="projection-row"><span class="matchup">PRECISIÓN COLECTIVA</span><strong>${accuracy.accuracy==null?'POR DEFINIR':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} aciertos en ${accuracy.judged} pronósticos individuales evaluados. · Consenso del grupo: ${collective.ratio===null?'sin partidos cerrados':collective.ratio+'%'} (${collective.correct}/${collective.judged}).</div></div>${gs.map(g=>{
-  const v=getSupport(g),awayPct=v.total?Math.round(v.away/v.total*100):50,homePct=100-awayPct;
-  const f=v.total?(v.away>v.home?g.away_name:v.home>v.away?g.home_name:'Empate en el grupo'):'Sin votos';
-  return `<div class="projection"><div class="projection-row"><div class="matchup">${escapeHtml(g.away_name)} <span style="color:#617083">vs.</span> ${escapeHtml(g.home_name)}<small>${v.participants} pronósticos · ${escapeHtml(duration(g.kickoff_at))}</small></div><strong>${escapeHtml(f)}</strong></div>${teamBar(g,awayPct,homePct,!!v.total)}<div class="bar-labels"><span>${escapeHtml(g.away_team)} ${v.total?awayPct+'%':'—'} · ${v.awayVotes} votos</span><span>${v.homeVotes} votos · ${v.total?homePct+'%':'—'} ${escapeHtml(g.home_team)}</span></div></div>`;
- }).join('')}<p class="fineprint">Estos porcentajes son respaldo ponderado del grupo, no la probabilidad estadística de victoria de los equipos.</p>`;
+ return `<div class="section-head"><div><h2>¿Qué dice la banda?</h2><p>La barra muestra cuántos amigos eligieron a cada equipo. Cada persona vale un voto; el slider NO cambia el consenso.</p></div><span class="count-tag">${state.members.length} PARTICIPANTES</span></div><div class="projection"><div class="projection-row"><span class="matchup">PRECISIÓN COLECTIVA</span><strong>${accuracy.accuracy==null?'POR DEFINIR':accuracy.accuracy+'%'}</strong></div><div class="forecast-info">${accuracy.right} aciertos en ${accuracy.judged} pronósticos individuales evaluados. · Consenso del grupo: ${collective.ratio===null?'sin partidos cerrados':collective.ratio+'%'} (${collective.correct}/${collective.judged}).</div></div>${gs.map(g=>{
+   const v=getSupport(g),awayPct=v.totalVotes?Math.round(v.awayVotes/v.totalVotes*100):50,homePct=100-awayPct;
+   const favorite=v.totalVotes?(v.awayVotes>v.homeVotes?g.away_name:v.homeVotes>v.awayVotes?g.home_name:'Empate provisional'):'Sin votos';
+   return `<div class="projection"><div class="projection-row"><div class="matchup">${escapeHtml(g.away_name)} <span style="color:#617083">vs.</span> ${escapeHtml(g.home_name)}<small>${v.participants}/${state.members.length} amigos votaron · ${escapeHtml(duration(g.kickoff_at))}</small></div><strong>${escapeHtml(favorite)}</strong></div>${teamBar(g,awayPct,homePct,!!v.totalVotes)}<div class="bar-labels"><span>${escapeHtml(g.away_team)} ${v.totalVotes?awayPct+'%':'—'} · ${v.awayVotes} votos</span><span>${v.homeVotes} votos · ${v.totalVotes?homePct+'%':'—'} ${escapeHtml(g.home_team)}</span></div></div>`;
+ }).join('')}<p class="fineprint">Estos porcentajes muestran la proporción de votos de tus amigos, no probabilidades reales de victoria. El slider individual solo sirve para el promedio de confianza del LOCK.</p>`;
 }
+
 function renderParlay(){
  const decisions=parlayConsensus();
  if(!decisions.length)return '<div class="empty-state">Primero hay que cargar los partidos de la semana.</div>';
- const valid=decisions.filter(d=>d.team).sort((a,b)=>Number(b.complete)-Number(a.complete)||b.support-a.support||b.v.ballots.length-a.v.ballots.length);
- const lockedPicks=valid.filter(d=>d.lock);
+ // La combinada final solo incluye partidos donde TODOS hayan votado.
+ const valid=decisions.filter(d=>d.complete&&d.team).sort((a,b)=>b.support-a.support||b.avgConfidence-a.avgConfidence);
+ const locks=valid.filter(d=>d.lock);
+ const pending=decisions.filter(d=>!d.complete).length;
  const everyone=state.members.length;
- const picksMarkup=(data,empty)=>data.length?data.map(({g,team,name,support,complete,lock,v})=>{
-   const pct=Math.round(support*100);
-   const pending=Math.max(0,everyone-v.ballots.length);
+ const picksMarkup=(data,empty)=>data.length?data.map(({g,team,name,support,votesFor,avgConfidence,lock,v})=>{
+   const votesPct=Math.round(support*100);
+   const avgPct=Math.round(avgConfidence);
    const winnerStatus=g.status==='post'?(g.winner===team?'ACERTAMOS':'FALLAMOS'):g.status==='in'?'EN JUEGO':'POR JUGAR';
    return `<div class="parlay-leg" style="--team-edge:${TEAM_COLORS[team]?.[0]||'#b4f268'}">
      <div class="parlay-leg-main"><div class="parlay-team">${logo(team,name,team===g.away_team?g.away_logo:g.home_logo)}<div><strong>${escapeHtml(name)}</strong><small>${escapeHtml(g.away_team)} vs. ${escapeHtml(g.home_team)} · ${escapeHtml(duration(g.kickoff_at))}</small></div></div>
-       <div class="parlay-metric"><strong>${pct}%</strong><small>RESPALDO</small></div></div>
-     <div class="parlay-leg-foot"><span>${v.ballots.length}/${everyone} votos · ${complete?'la banda ya votó':pending+' por votar'}</span><span>${lock?'LOCK DE TODOS · ':''}${winnerStatus}</span></div>
+       <div class="parlay-metric"><strong>${votesFor}/${everyone}</strong><small>VOTOS A FAVOR</small></div></div>
+     <div class="parlay-leg-foot"><span>${votesPct}% eligió este equipo · confianza promedio ${avgPct}%</span><span>${lock?'LOCK · ':''}${winnerStatus}</span></div>
    </div>`;
  }).join(''):`<div class="empty-state">${empty}</div>`;
- const tentative=valid.some(d=>!d.complete);
- return `<div class="section-head"><div><h2>El parlay de la banda</h2><p>Aquí se arma la combinada con los picks de TODOS. No mostramos boletas individuales.</p></div><span class="count-tag">${everyone} EN LA LIGA</span></div>
- <div class="parlay-summary"><div><span class="parlay-kicker">LA COMBINADA DEL GRUPO</span><strong>${valid.length} selecciones</strong><p>Elegimos el equipo con mayor suma de confianza en cada juego. ${tentative?'Algunos picks todavía son provisionales hasta que vote toda la banda.':'Todos los participantes ya votaron en los picks marcados como completos.'}</p></div><span class="parlay-count">${valid.length}/${decisions.length}</span></div>
- <div class="parlay-list">${picksMarkup(valid,'Todavía no hay votos para armar la combinada de esta semana.')}</div>
- ${decisions.some(d=>d.drawn)?'<p class="parlay-caution">Los juegos empatados en respaldo no entran en la combinada hasta romper el empate.</p>':''}
- <div class="section-head lock-head"><div><h2>LOCK de la banda</h2><p>Solo entra si TODOS eligieron el mismo equipo y cada uno le dio al menos 80% de confianza.</p></div><span class="count-tag">${lockedPicks.length} LOCKS</span></div>
- <div class="parlay-list">${picksMarkup(lockedPicks,'Aún no tenemos un LOCK unánime de 80% o más. Falta convencer a la banda.')}</div>
- <p class="fineprint">MOFERLAY solo organiza el consenso de sus integrantes. No genera boletos, cuotas ni apuestas. Un LOCK no garantiza que gane el equipo.</p>`;
+ return `<div class="section-head"><div><h2>El parlay de la banda</h2><p>Se elige al equipo con MÁS VOTOS. Cada amigo cuenta igual, aunque haya puesto MOFE o LOCK.</p></div><span class="count-tag">${everyone} EN LA LIGA</span></div>
+ <div class="parlay-summary"><div><span class="parlay-kicker">LA COMBINADA DEL GRUPO</span><strong>${valid.length} selecciones listas</strong><p>Con 5 votos, el equipo elegido tendrá al menos 3. ${pending?`Hay ${pending} partido(s) pendiente(s) de que todos voten.`:'Todos los partidos tienen los votos completos.'} La confianza NO cambia quién queda en el parlay.</p></div><span class="parlay-count">${valid.length}/${decisions.length}</span></div>
+ <div class="parlay-list">${picksMarkup(valid,'Cuando los 5 hayan votado por un partido, aparecerá aquí la elección mayoritaria.')}</div>
+ <div class="section-head lock-head"><div><h2>LOCK de la banda</h2><p>Entre los que eligieron al equipo mayoritario, la confianza PROMEDIO debe superar el 70% y todos deben haber votado.</p></div><span class="count-tag">${locks.length} LOCKS</span></div>
+ <div class="parlay-list">${picksMarkup(locks,'Todavía no hay partidos con promedio de confianza superior al 70% entre quienes apoyan al favorito.')}</div>
+ <p class="fineprint">LOCK significa alta confianza declarada por el grupo, no una garantía de resultado ni una probabilidad real de ganar. MOFERLAY no genera boletos ni gestiona apuestas.</p>`;
 }
+
 function renderRanking(){
  const leaders=memberStats(state.scope),accuracy=totalGroupAccuracy(state.scope),onWeek=state.scope==='week';
  const dates=state.allGames.filter(g=>g.season===state.season&&g.week===state.week),max=dates.length*SCORE_MINORITY;
